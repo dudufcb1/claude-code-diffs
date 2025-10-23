@@ -1,0 +1,153 @@
+{
+  "name": "claude-code-diffs",
+  "displayName": "Claude Code Diffs",
+  "description": "Track and visualize file changes made during Claude Code sessions",
+  "version": "0.2.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeCodeDiff.showSessionChanges",
+        "title": "Claude Code: Show Session Changes",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "claudeCodeDiff.showRecentDiffs",
+        "title": "Claude Code: Show Recent Diffs",
+        "icon": "$(history)"
+      },
+      {
+        "command": "claudeCodeDiff.showChangesSummary",
+        "title": "Claude Code Diffs: Show Changes Summary",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "claudeCodeDiff.refreshChanges",
+        "title": "Claude Code Diffs: Refresh Changes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeCodeDiff.viewDiff",
+        "title": "View Diff",
+        "icon": "$(diff)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "claudeCodeDiff.showSessionChanges"
+        },
+        {
+          "command": "claudeCodeDiff.showRecentDiffs"
+        },
+        {
+          "command": "claudeCodeDiff.showChangesSummary"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Code Diffs",
+      "properties": {
+        "claudeCodeDiff.sessionPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Claude Code sessions directory (auto-detected if empty)"
+        },
+        "claudeCodeDiff.maxChangesToShow": {
+          "type": "number",
+          "default": 50,
+          "description": "Maximum number of recent changes to show"
+        },
+        "claudeCodeDiff.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh changes when files are modified"
+        },
+        "claudeCodeDiff.showPastSessionChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show changes from previous sessions in addition to the current session"
+        },
+        "claudeCodeDiff.showDiffsLive": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open diff view when Claude makes changes to files (live mode)"
+        },
+        "claudeCodeDiff.liveDelay": {
+          "type": "number",
+          "default": 1000,
+          "description": "Delay in milliseconds before opening diff in live mode (to avoid spam)"
+        },
+        "claudeCodeDiff.liveNotifications": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show notifications when opening diffs in live mode"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-code-diffs",
+          "title": "Claude Code Diffs",
+          "icon": "$(diff)"
+        }
+      ]
+    },
+    "views": {
+      "claude-code-diffs": [
+        {
+          "id": "claudeCodeDiffs.changesView",
+          "name": "Session Changes",
+          "icon": "$(diff)",
+          "contextualTitle": "Claude Code Diffs"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeCodeDiff.refreshChanges",
+          "when": "view == claudeCodeDiffs.changesView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeCodeDiff.viewDiff",
+          "when": "view == claudeCodeDiffs.changesView && viewItem == fileChange",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "jsonlines": "^0.1.1"
+  }
+}

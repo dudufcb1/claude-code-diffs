@@ -1,0 +1,35 @@
+# Node modules
+node_modules/
+package-lock.json
+
+# Build output
+out/
+*.vsix
+
+# VS Code
+.vscode/
+.vscode-test/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Editor backup files
+*~
+.*.swp
+.*.swo
+
+# Development
+.env
+.env.local
