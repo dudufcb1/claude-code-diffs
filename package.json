@@ -2,7 +2,7 @@
   "name": "claude-code-diffs",
   "displayName": "Claude Code Diffs",
   "description": "Track and visualize file changes made during Claude Code sessions",
-  "version": "0.2.0",
+  "version": "1.0.2",
   "publisher": "local",
   "engines": {
     "vscode": "^1.80.0"
@@ -10,6 +10,10 @@
   "categories": [
     "Other"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dudufcb1/claude-code-diffs.git"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -40,6 +44,21 @@
         "command": "claudeCodeDiff.viewDiff",
         "title": "View Diff",
         "icon": "$(diff)"
+      },
+      {
+        "command": "claudeCodeDiff.closeAllDiffs",
+        "title": "Claude Code Diffs: Close All Diffs",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "claudeCodeDiff.showDeletions",
+        "title": "Claude Code Diffs: Show Deletions",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeCodeDiff.toggleMultipleDiffs",
+        "title": "Claude Code Diffs: Toggle Open Diffs in Multiple Tabs",
+        "icon": "$(split-horizontal)"
       }
     ],
     "menus": {
@@ -52,6 +71,20 @@
         },
         {
           "command": "claudeCodeDiff.showChangesSummary"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "claudeCodeDiff.refreshChanges",
+          "when": "view == claudeCodeDiffs.changesView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeCodeDiff.viewDiff",
+          "when": "view == claudeCodeDiffs.changesView && viewItem == fileChange",
+          "group": "inline"
         }
       ]
     },
@@ -90,8 +123,119 @@
         },
         "claudeCodeDiff.liveNotifications": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Show notifications when opening diffs in live mode"
+        },
+        "claudeCodeDiff.liveMultipleDiffs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open multiple diffs simultaneously in live mode (instead of replacing the previous one)"
+        },
+        "claudeCodeDiff.liveMaxOpenDiffs": {
+          "type": "number",
+          "default": 5,
+          "description": "Maximum number of diff tabs to keep open simultaneously in live mode (0 = unlimited)"
+        },
+        "claudeCodeDiff.claudeInstancePaths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Custom paths to Claude instance directories (e.g., ['C:\\Users\\YourName\\.claude', '/home/user/.claude-gpt5']). Leave empty to auto-detect."
+        },
+        "claudeCodeDiff.enableHeuristicTracker": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable heuristic file change tracking (detects changes from any source, not just Claude Code)"
+        },
+        "claudeCodeDiff.heuristicTrackerDelay": {
+          "type": "number",
+          "default": 500,
+          "description": "Delay in milliseconds before capturing changes in heuristic mode"
+        },
+        "claudeCodeDiff.heuristicTrackerNotifications": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show notifications when heuristic tracker detects changes"
+        },
+        "claudeCodeDiff.openDiffsOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically open diffs when VS Code starts (applies to live mode)"
+        },
+        "claudeCodeDiff.heuristicExcludePatterns": {
+          "type": "array",
+          "default": [
+            "**/node_modules/**",
+            "**/out/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/.next/**",
+            "**/.nuxt/**",
+            "**/.output/**",
+            "**/target/**",
+            "**/bin/**",
+            "**/obj/**",
+            "**/.codebase/**",
+            "**/.git/**",
+            "**/.vscode/**",
+            "**/.idea/**",
+            "**/coverage/**",
+            "**/.nyc_output/**",
+            "**/tmp/**",
+            "**/temp/**",
+            "**/package.json",
+            "**/package-lock.json",
+            "**/yarn.lock",
+            "**/pnpm-lock.yaml",
+            "**/composer.json",
+            "**/composer.lock",
+            "**/Gemfile",
+            "**/Gemfile.lock",
+            "**/go.mod",
+            "**/go.sum",
+            "**/Cargo.toml",
+            "**/Cargo.lock",
+            "**/requirements.txt",
+            "**/poetry.lock",
+            "**/Pipfile",
+            "**/Pipfile.lock",
+            "**/.env",
+            "**/.env.*",
+            "**/tsconfig.json",
+            "**/jsconfig.json",
+            "**/.eslintrc.*",
+            "**/.prettierrc.*",
+            "**/webpack.config.*",
+            "**/vite.config.*",
+            "**/rollup.config.*",
+            "**/site-packages/**",
+            "**/lib/python*/**",
+            "**/.venv/**",
+            "**/venv/**",
+            "**/env/**",
+            "**/virtualenv/**",
+            "**/__pycache__/**",
+            "**/*.pyc",
+            "**/lib/**",
+            "**/lib64/**",
+            "**/share/**",
+            "**/include/**",
+            "**/bin/python*",
+            "**/bin/pip*",
+            "**/vendor/**",
+            "**/gems/**",
+            "**/node_modules/.cache/**",
+            "**/.cargo/**",
+            "**/.rustup/**",
+            "**/target/debug/**",
+            "**/target/release/**"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Glob patterns for folders/files to exclude from heuristic tracking (e.g., build outputs, dependencies, IDE files)"
         }
       }
     },
@@ -111,22 +255,6 @@
           "name": "Session Changes",
           "icon": "$(diff)",
           "contextualTitle": "Claude Code Diffs"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "claudeCodeDiff.refreshChanges",
-          "when": "view == claudeCodeDiffs.changesView",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "claudeCodeDiff.viewDiff",
-          "when": "view == claudeCodeDiffs.changesView && viewItem == fileChange",
-          "group": "inline"
         }
       ]
     }

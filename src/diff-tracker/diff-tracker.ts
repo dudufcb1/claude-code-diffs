@@ -8,6 +8,7 @@ import { FileChange } from '../types/session-events';
 export class DiffTracker {
   private context: vscode.ExtensionContext;
   private changesCache: Map<string, FileChange[]> = new Map();
+  private openDiffEditors: vscode.Uri[] = [];
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -16,8 +17,14 @@ export class DiffTracker {
   /**
    * Show diff for a specific file change using VS Code's diff editor
    */
-  async showDiff(change: FileChange): Promise<void> {
+  async showDiff(change: FileChange, options?: { viewColumn?: vscode.ViewColumn; preview?: boolean }): Promise<void> {
     const filePath = change.filePath;
+
+    // Handle deleted files specially
+    if (change.isDeleted || change.toolName === 'Delete') {
+      await this.showDeletedFile(change, options);
+      return;
+    }
 
     // Create temp files for before/after comparison
     const beforeUri = await this.createTempFile(
@@ -34,14 +41,159 @@ export class DiffTracker {
     const timestamp = new Date(change.timestamp).toLocaleString();
     const title = `${path.basename(filePath)} - ${change.toolName} @ ${timestamp}`;
 
+    // Determine view column
+    const viewColumn = options?.viewColumn || this.getNextViewColumn();
+    const preview = options?.preview !== undefined ? options.preview : false;
+
     // Open diff editor
     await vscode.commands.executeCommand(
       'vscode.diff',
       beforeUri,
       afterUri,
       title,
-      { preview: true }
+      { preview, viewColumn }
     );
+
+    // Track open diff
+    this.openDiffEditors.push(beforeUri);
+    this.openDiffEditors.push(afterUri);
+  }
+
+  /**
+   * Show deleted file information
+   */
+  async showDeletedFile(change: FileChange, options?: { viewColumn?: vscode.ViewColumn; preview?: boolean }): Promise<void> {
+    const filePath = change.filePath;
+    const timestamp = new Date(change.timestamp).toLocaleString();
+    const fileName = path.basename(filePath);
+
+    // Show information message with file name
+    const action = await vscode.window.showInformationMessage(
+      `File deleted: ${fileName} @ ${timestamp}`,
+      'View Details'
+    );
+
+    if (action === 'View Details') {
+      // Create temp file with deletion info
+      const infoContent = [
+        `File Deleted`,
+        ``,
+        `Path: ${filePath}`,
+        `Timestamp: ${timestamp}`,
+        `Session: ${change.sessionId}`,
+        ``,
+        `This file was deleted during the Claude Code session.`,
+        ``,
+        `To restore:`,
+        `- Check git history: git log -- "${filePath}"`,
+        `- Or restore from backup if available`
+      ].join('\n');
+
+      const infoUri = await this.createTempFile(
+        infoContent,
+        `deleted-${fileName}.txt`
+      );
+
+      const viewColumn = options?.viewColumn || vscode.ViewColumn.Two;
+
+      await vscode.commands.executeCommand(
+        'vscode.open',
+        infoUri,
+        { viewColumn, preview: false }
+      );
+    }
+  }
+
+  /**
+   * Get the next available view column for opening diffs
+   */
+  private getNextViewColumn(): vscode.ViewColumn {
+    const config = vscode.workspace.getConfiguration('claudeCodeDiff');
+    const multipleDiffs = config.get<boolean>('liveMultipleDiffs', true);
+    const maxOpenDiffs = config.get<number>('liveMaxOpenDiffs', 5);
+
+    if (!multipleDiffs) {
+      // Always use the same column (replaces previous diff)
+      return vscode.ViewColumn.Two;
+    }
+
+    // Get currently visible text editors
+    const visibleEditors = vscode.window.visibleTextEditors;
+    const usedColumns = new Set(visibleEditors.map(e => e.viewColumn).filter(c => c !== undefined));
+
+    // Find next available column
+    let nextColumn = vscode.ViewColumn.Two;
+
+    if (maxOpenDiffs > 0) {
+      // Cycle through available columns up to max
+      const columnsToTry = [
+        vscode.ViewColumn.Two,
+        vscode.ViewColumn.Three,
+        vscode.ViewColumn.Four,
+        vscode.ViewColumn.Five,
+        vscode.ViewColumn.Six,
+        vscode.ViewColumn.Seven,
+        vscode.ViewColumn.Eight,
+        vscode.ViewColumn.Nine
+      ];
+
+      // Find first unused column within limit
+      for (let i = 0; i < Math.min(maxOpenDiffs, columnsToTry.length); i++) {
+        if (!usedColumns.has(columnsToTry[i])) {
+          return columnsToTry[i];
+        }
+      }
+
+      // If all within limit are used, cycle back to column 2
+      return vscode.ViewColumn.Two;
+    }
+
+    // Unlimited: find first unused column
+    const columnsToTry = [
+      vscode.ViewColumn.Two,
+      vscode.ViewColumn.Three,
+      vscode.ViewColumn.Four,
+      vscode.ViewColumn.Five,
+      vscode.ViewColumn.Six,
+      vscode.ViewColumn.Seven,
+      vscode.ViewColumn.Eight,
+      vscode.ViewColumn.Nine
+    ];
+
+    for (const col of columnsToTry) {
+      if (!usedColumns.has(col)) {
+        return col;
+      }
+    }
+
+    // All columns used, use Beside
+    return vscode.ViewColumn.Beside;
+  }
+
+  /**
+   * Close all open diff editors
+   */
+  async closeAllDiffs(): Promise<void> {
+    console.log('[DiffTracker] Closing all open diffs');
+
+    // Close tabs with temp files
+    for (const uri of this.openDiffEditors) {
+      const tabs = vscode.window.tabGroups.all
+        .flatMap(group => group.tabs)
+        .filter(tab => {
+          if (tab.input instanceof vscode.TabInputTextDiff) {
+            return tab.input.original.toString() === uri.toString() ||
+                   tab.input.modified.toString() === uri.toString();
+          }
+          return false;
+        });
+
+      for (const tab of tabs) {
+        await vscode.window.tabGroups.close(tab);
+      }
+    }
+
+    this.openDiffEditors = [];
   }
 
   /**
@@ -177,37 +329,48 @@ export class DiffTracker {
   }
 
   /**
-   * Show changes summary in output channel
+   * Show only deleted files in quick pick
    */
-  showChangesSummary(changes: FileChange[]): void {
-    const channel = vscode.window.createOutputChannel('Claude Code Session Changes');
-    channel.clear();
-    channel.show();
+  async showDeletionsQuickPick(changes: FileChange[]): Promise<void> {
+    // Filter only Delete operations
+    const deletions = changes.filter(c => c.toolName === 'Delete' || c.isDeleted);
 
-    channel.appendLine('═══════════════════════════════════════════════════');
-    channel.appendLine('  Claude Code Session Changes Summary');
-    channel.appendLine('═══════════════════════════════════════════════════\n');
-
-    const grouped = this.groupChangesByFile(changes);
-
-    channel.appendLine(`Total files modified: ${grouped.size}`);
-    channel.appendLine(`Total changes: ${changes.length}\n`);
-
-    channel.appendLine('Changes by file:\n');
-
-    for (const [filePath, fileChanges] of grouped) {
-      channel.appendLine(`📄 ${filePath}`);
-      channel.appendLine(`   ${fileChanges.length} change(s)\n`);
-
-      for (const change of fileChanges) {
-        const timestamp = new Date(change.timestamp).toLocaleString();
-        channel.appendLine(`   • ${change.toolName} - ${timestamp}`);
-      }
-
-      channel.appendLine('');
+    if (deletions.length === 0) {
+      vscode.window.showInformationMessage(
+        'No file deletions found in current session'
+      );
+      return;
     }
 
-    channel.appendLine('═══════════════════════════════════════════════════');
+    interface DeletionQuickPickItem extends vscode.QuickPickItem {
+      change: FileChange;
+    }
+
+    // Create quick pick items for deletions
+    const items: DeletionQuickPickItem[] = deletions.map((change) => {
+      const timestamp = new Date(change.timestamp);
+      const timeStr = timestamp.toLocaleString();
+      const fileName = path.basename(change.filePath);
+
+      return {
+        label: `$(trash) ${fileName}`,
+        description: `Deleted @ ${timeStr}`,
+        detail: change.filePath,
+        change,
+      };
+    });
+
+    // Show quick pick
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: `Select a deleted file to view details (${deletions.length} deletions)`,
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+
+    if (selected) {
+      // Show deletion info
+      await this.showDeletedFile(selected.change);
+    }
   }
 }
 

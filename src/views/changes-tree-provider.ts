@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { FileChange } from '../types/session-events';
 import { SessionParser } from '../parsers/session-parser';
+import { HeuristicTracker } from '../heuristic-tracker/heuristic-tracker';
 
 /**
  * Tree item for file changes
@@ -23,13 +24,22 @@ class FileChangeTreeItem extends vscode.TreeItem {
     // Description (shown next to label)
     this.description = this.formatTimeAgo(change.timestamp);
 
-    // Icon
-    this.iconPath = new vscode.ThemeIcon(
-      change.toolName === 'Edit' ? 'edit' : 'file-add',
-      new vscode.ThemeColor(
-        change.toolName === 'Edit' ? 'gitDecoration.modifiedResourceForeground' : 'gitDecoration.addedResourceForeground'
-      )
-    );
+    // Icon based on operation type
+    let icon: string;
+    let color: string;
+
+    if (change.toolName === 'Delete') {
+      icon = 'trash';
+      color = 'gitDecoration.deletedResourceForeground';
+    } else if (change.toolName === 'Edit') {
+      icon = 'edit';
+      color = 'gitDecoration.modifiedResourceForeground';
+    } else {
+      icon = 'file-add';
+      color = 'gitDecoration.addedResourceForeground';
+    }
+
+    this.iconPath = new vscode.ThemeIcon(icon, new vscode.ThemeColor(color));
 
     // Command to view diff when clicked
     this.command = {
@@ -91,7 +101,14 @@ class SessionGroupTreeItem extends vscode.TreeItem {
     public readonly isCurrent: boolean,
     public readonly collapsibleState: vscode.TreeItemCollapsibleState
   ) {
-    const label = isCurrent ? '📍 Current Session' : `Session ${sessionId.substring(0, 8)}`;
+    // Special label for heuristic changes
+    let label: string;
+    if (sessionId === 'unknown-sources') {
+      label = 'Current Session (Unknown Sources)';
+    } else {
+      label = isCurrent ? 'Current Session' : `Session ${sessionId.substring(0, 8)}`;
+    }
+
     super(label, collapsibleState);
 
     this.contextValue = 'sessionGroup';
@@ -146,7 +163,16 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<TreeElement>
   private showPastSessions: boolean = false;
   private currentSessionId: string | null = null;
 
-  constructor(private parser: SessionParser) {}
+  constructor(
+    private parser: SessionParser,
+    private heuristicTracker: HeuristicTracker
+  ) {
+    // Set callback to refresh tree when heuristic changes occur
+    heuristicTracker.setOnChangeCallback(() => {
+      console.log('[ChangesTreeProvider] Heuristic change detected, refreshing tree');
+      this.refresh();
+    });
+  }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();
@@ -180,9 +206,23 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<TreeElement>
   async getChildren(element?: TreeElement): Promise<TreeElement[]> {
     if (!element) {
       // Root level
+      const heuristicChanges = this.heuristicTracker.getHeuristicChanges();
+      const hasHeuristicChanges = heuristicChanges.length > 0;
+
       if (this.showPastSessions && this.sessionChanges.size > 0) {
         // Show sessions as top-level groups
         const sessions: SessionGroupTreeItem[] = [];
+
+        // Add heuristic changes as first group if any exist
+        if (hasHeuristicChanges) {
+          sessions.push(new SessionGroupTreeItem(
+            'unknown-sources',
+            'heuristic',
+            heuristicChanges,
+            true, // Show as current/active
+            vscode.TreeItemCollapsibleState.Collapsed
+          ));
+        }
 
         for (const [sessionId, data] of this.sessionChanges) {
           const isCurrent = sessionId === this.currentSessionId;
@@ -195,8 +235,10 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<TreeElement>
           ));
         }
 
-        // Sort: current session first, then by timestamp
+        // Sort: heuristic first, then current session, then by timestamp
         sessions.sort((a, b) => {
+          if (a.sessionId === 'unknown-sources') return -1;
+          if (b.sessionId === 'unknown-sources') return 1;
           if (a.isCurrent) return -1;
           if (b.isCurrent) return 1;
           // Sort by most recent
@@ -208,27 +250,41 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<TreeElement>
         return sessions;
       } else {
         // Show only current session changes
-        if (this.changes.length === 0) {
-          return [];
-        }
+        const results: TreeElement[] = [];
 
-        if (this.groupByFile) {
-          // Group by file
-          const grouped = this.groupChangesByFile(this.changes);
-          return Array.from(grouped.entries()).map(([filePath, fileChanges]) => {
-            return new FileGroupTreeItem(
-              filePath,
-              fileChanges,
-              vscode.TreeItemCollapsibleState.Collapsed
-            );
-          });
-        } else {
-          // Flat list
-          return this.changes.map(change => new FileChangeTreeItem(
-            change,
-            vscode.TreeItemCollapsibleState.None
+        // Add heuristic changes group if any
+        if (hasHeuristicChanges) {
+          results.push(new SessionGroupTreeItem(
+            'unknown-sources',
+            'heuristic',
+            heuristicChanges,
+            true,
+            vscode.TreeItemCollapsibleState.Expanded // Expanded by default
           ));
         }
+
+        // Add Claude session changes
+        if (this.changes.length > 0) {
+          if (this.groupByFile) {
+            // Group by file
+            const grouped = this.groupChangesByFile(this.changes);
+            results.push(...Array.from(grouped.entries()).map(([filePath, fileChanges]) => {
+              return new FileGroupTreeItem(
+                filePath,
+                fileChanges,
+                vscode.TreeItemCollapsibleState.Collapsed
+              );
+            }));
+          } else {
+            // Flat list
+            results.push(...this.changes.map(change => new FileChangeTreeItem(
+              change,
+              vscode.TreeItemCollapsibleState.None
+            )));
+          }
+        }
+
+        return results;
       }
     } else if (element instanceof SessionGroupTreeItem) {
       // Children of session: show files grouped

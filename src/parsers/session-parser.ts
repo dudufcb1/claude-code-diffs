@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as vscode from 'vscode';
 import { SessionEvent, FileChange, SessionMetadata } from '../types/session-events';
 
 /**
@@ -9,13 +10,32 @@ import { SessionEvent, FileChange, SessionMetadata } from '../types/session-even
  */
 export class SessionParser {
   private homeDir: string;
-  private claudeInstances: string[];
+  private defaultClaudeInstances: string[];
 
   constructor() {
     this.homeDir = os.homedir();
     // Search .claude first (official), then alternatives
-    this.claudeInstances = ['.claude', '.claude-gpt5'];
+    this.defaultClaudeInstances = ['.claude', '.claude-gpt5'];
     console.log('[SessionParser] Initialized with home:', this.homeDir);
+  }
+
+  /**
+   * Get Claude instance paths from config or defaults
+   */
+  private getClaudeInstancePaths(): string[] {
+    const config = vscode.workspace.getConfiguration('claudeCodeDiff');
+    const customPaths = config.get<string[]>('claudeInstancePaths', []);
+
+    // If custom paths configured, use them
+    if (customPaths.length > 0) {
+      console.log('[SessionParser] Using custom Claude instance paths:', customPaths);
+      return customPaths;
+    }
+
+    // Otherwise, auto-detect from home directory
+    return this.defaultClaudeInstances.map(instance =>
+      path.join(this.homeDir, instance)
+    );
   }
 
   /**
@@ -23,15 +43,39 @@ export class SessionParser {
    */
   findClaudeInstances(): string[] {
     const instances: string[] = [];
+    const instancePaths = this.getClaudeInstancePaths();
 
-    for (const instanceName of this.claudeInstances) {
-      const instancePath = path.join(this.homeDir, instanceName, 'projects');
-      if (fs.existsSync(instancePath)) {
-        instances.push(path.join(this.homeDir, instanceName));
+    for (const instancePath of instancePaths) {
+      const projectsPath = path.join(instancePath, 'projects');
+      if (fs.existsSync(projectsPath)) {
+        instances.push(instancePath);
       }
     }
 
+    console.log('[SessionParser] Found Claude instances:', instances);
     return instances;
+  }
+
+  /**
+   * Encode workspace path for Claude directory name
+   * Works cross-platform: handles / (Linux/Mac) and \ (Windows)
+   * Example (Linux): /home/eduardo/project -> -home-eduardo-project
+   * Example (Windows): C:\Users\Name\project -> C--Users-Name-project
+   */
+  private encodeWorkspacePath(workspacePath: string): string {
+    // Normalize path separators to forward slash
+    let normalized = workspacePath.replace(/\\/g, '/');
+
+    // Replace all / with -
+    // On Windows: C:/Users/Name/project -> C:-Users-Name-project
+    // On Linux: /home/eduardo/project -> -home-eduardo-project
+    let encoded = normalized.replace(/\//g, '-');
+
+    // On Windows, replace : from drive letter with -
+    // C:-Users-Name-project -> C--Users-Name-project
+    encoded = encoded.replace(/:/g, '-');
+
+    return encoded;
   }
 
   /**
@@ -51,8 +95,8 @@ export class SessionParser {
     const instances = this.findClaudeInstances();
     console.log('[SessionParser] Found Claude instances:', instances);
 
-    // Encode workspace path: replace / with - and keep leading -
-    const encodedName = workspacePath.replace(/\//g, '-');
+    // Encode workspace path (cross-platform)
+    const encodedName = this.encodeWorkspacePath(workspacePath);
     console.log('[SessionParser] Encoded name:', encodedName);
 
     for (const instancePath of instances) {
@@ -158,39 +202,70 @@ export class SessionParser {
         }
 
         const toolName = item.name;
-
-        // Only process Edit and Write tools
-        if (toolName !== 'Edit' && toolName !== 'Write') {
-          continue;
-        }
-
         const input = item.input;
 
-        if (!input.file_path) {
-          console.log(`[SessionParser] Skipping ${toolName} - no file_path`);
-          continue;
+        // Process Edit and Write tools
+        if (toolName === 'Edit' || toolName === 'Write') {
+          if (!input.file_path) {
+            console.log(`[SessionParser] Skipping ${toolName} - no file_path`);
+            continue;
+          }
+
+          console.log(`[SessionParser] Found ${toolName}: ${input.file_path}`);
+
+          const change: FileChange = {
+            sessionId: event.sessionId,
+            timestamp: event.timestamp,
+            toolName: toolName as 'Edit' | 'Write',
+            filePath: input.file_path,
+            gitBranch: event.gitBranch,
+            messageUuid: event.uuid,
+            parentUuid: event.parentUuid,
+          };
+
+          if (toolName === 'Edit') {
+            change.oldContent = input.old_string;
+            change.newContent = input.new_string;
+          } else if (toolName === 'Write') {
+            change.newContent = input.content;
+          }
+
+          changes.push(change);
         }
+        // Process Bash commands that delete files
+        else if (toolName === 'Bash') {
+          const command = input.command || '';
 
-        console.log(`[SessionParser] Found ${toolName}: ${input.file_path}`);
+          // Detect rm commands
+          const rmMatch = command.match(/\brm\s+(?:-[rf]+\s+)?(.+)/);
+          if (rmMatch) {
+            const filePaths = rmMatch[1]
+              .split(/\s+/)
+              .filter(p => p && !p.startsWith('-'));
 
-        const change: FileChange = {
-          sessionId: event.sessionId,
-          timestamp: event.timestamp,
-          toolName: toolName as 'Edit' | 'Write',
-          filePath: input.file_path,
-          gitBranch: event.gitBranch,
-          messageUuid: event.uuid,
-          parentUuid: event.parentUuid,
-        };
+            for (const filePath of filePaths) {
+              // Clean up the file path
+              const cleanPath = filePath.trim().replace(/['"]/g, '');
 
-        if (toolName === 'Edit') {
-          change.oldContent = input.old_string;
-          change.newContent = input.new_string;
-        } else if (toolName === 'Write') {
-          change.newContent = input.content;
+              if (cleanPath) {
+                console.log(`[SessionParser] Found Delete (via Bash rm): ${cleanPath}`);
+
+                const change: FileChange = {
+                  sessionId: event.sessionId,
+                  timestamp: event.timestamp,
+                  toolName: 'Delete',
+                  filePath: cleanPath,
+                  gitBranch: event.gitBranch,
+                  messageUuid: event.uuid,
+                  parentUuid: event.parentUuid,
+                  isDeleted: true,
+                };
+
+                changes.push(change);
+              }
+            }
+          }
         }
-
-        changes.push(change);
       }
     }
 

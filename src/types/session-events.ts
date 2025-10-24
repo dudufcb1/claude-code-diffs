@@ -86,13 +86,15 @@ export interface FileHistorySnapshot {
 export interface FileChange {
   sessionId: string;
   timestamp: string;
-  toolName: 'Edit' | 'Write';
+  toolName: 'Edit' | 'Write' | 'Delete' | 'Heuristic';
   filePath: string;
   oldContent?: string;
   newContent?: string;
   gitBranch?: string;
   messageUuid: string;
   parentUuid: string | null;
+  isDeleted?: boolean;
+  isHeuristic?: boolean; // Flag for heuristically detected changes
 }
 
 /**

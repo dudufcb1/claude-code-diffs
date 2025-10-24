@@ -12,8 +12,7 @@ export class LiveDiffTracker {
   private delay: number = 1000;
 
   constructor(
-    private diffTracker: DiffTracker,
-    private outputChannel: vscode.OutputChannel
+    private diffTracker: DiffTracker
   ) {}
 
   /**
@@ -24,9 +23,8 @@ export class LiveDiffTracker {
     console.log(`[LiveDiffTracker] Live mode ${enabled ? 'enabled' : 'disabled'}`);
 
     if (enabled) {
-      this.outputChannel.appendLine('🔴 Live Diff Mode ENABLED - Diffs will open automatically');
+      vscode.window.showInformationMessage('Live Diff Mode enabled - diffs will open automatically');
     } else {
-      this.outputChannel.appendLine('⚪ Live Diff Mode DISABLED');
       // Cancel any pending diffs
       for (const timeout of this.pendingDiffs.values()) {
         clearTimeout(timeout);
@@ -46,8 +44,13 @@ export class LiveDiffTracker {
   /**
    * Process new changes and open diffs for new ones
    */
-  async processChanges(changes: FileChange[]): Promise<void> {
+  async processChanges(changes: FileChange[], skipOnStartup: boolean = false): Promise<void> {
     if (!this.isEnabled || changes.length === 0) {
+      return;
+    }
+
+    if (skipOnStartup) {
+      console.log(`[LiveDiffTracker] Skipping ${changes.length} changes (startup mode with openDiffsOnStartup=false)`);
       return;
     }
 
@@ -94,30 +97,21 @@ export class LiveDiffTracker {
       try {
         console.log(`[LiveDiffTracker] Opening diff for: ${change.filePath}`);
 
-        this.outputChannel.appendLine(
-          `\n📄 ${change.toolName}: ${change.filePath}\n` +
-          `   Time: ${new Date(change.timestamp).toLocaleString()}`
-        );
-
-        await this.diffTracker.showDiff(change);
-
-        // Show notification (optional, can be disabled)
+        // Show notification with file name
+        const fileName = change.filePath.split('/').pop() || change.filePath;
         const config = vscode.workspace.getConfiguration('claudeCodeDiff');
-        const showNotifications = config.get<boolean>('liveNotifications', false);
+        const showNotifications = config.get<boolean>('liveNotifications', true);
 
         if (showNotifications) {
           vscode.window.showInformationMessage(
-            `Claude ${change.toolName}: ${change.filePath.split('/').pop()}`,
-            'View'
-          ).then(selection => {
-            if (selection === 'View') {
-              this.diffTracker.showDiff(change);
-            }
-          });
+            `[${change.toolName}] ${fileName}`
+          );
         }
+
+        await this.diffTracker.showDiff(change);
       } catch (error) {
         console.error('[LiveDiffTracker] Error opening diff:', error);
-        this.outputChannel.appendLine(`❌ Error opening diff: ${error}`);
+        vscode.window.showErrorMessage(`Failed to open diff: ${error}`);
       } finally {
         this.pendingDiffs.delete(changeKey);
       }

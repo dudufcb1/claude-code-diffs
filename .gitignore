@@ -33,3 +33,9 @@ Thumbs.db
 # Development
 .env
 .env.local
+
+# Semantic search codebase
+.codebase/
+
+# Extension assets (generated)
+deleted.png

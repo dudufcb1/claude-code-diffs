@@ -3,6 +3,7 @@ import { SessionParser } from './parsers/session-parser';
 import { DiffTracker } from './diff-tracker/diff-tracker';
 import { ChangesTreeProvider } from './views/changes-tree-provider';
 import { LiveDiffTracker } from './live-mode/live-diff-tracker';
+import { HeuristicTracker } from './heuristic-tracker/heuristic-tracker';
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('Claude Code Diffs extension activated');
@@ -10,21 +11,21 @@ export function activate(context: vscode.ExtensionContext) {
   const parser = new SessionParser();
   const diffTracker = new DiffTracker(context);
 
-  // Create output channel for live mode
-  const outputChannel = vscode.window.createOutputChannel('Claude Code Diffs - Live');
+  // Create live diff tracker (without output channel)
+  const liveDiffTracker = new LiveDiffTracker(diffTracker);
 
-  // Create live diff tracker
-  const liveDiffTracker = new LiveDiffTracker(diffTracker, outputChannel);
+  // Create heuristic tracker (for non-Claude changes)
+  const heuristicTracker = new HeuristicTracker(diffTracker, context);
 
   // Create tree view
-  const treeProvider = new ChangesTreeProvider(parser);
+  const treeProvider = new ChangesTreeProvider(parser, heuristicTracker);
   const treeView = vscode.window.createTreeView('claudeCodeDiffs.changesView', {
     treeDataProvider: treeProvider,
     showCollapseAll: true
   });
 
   // Load changes on activation
-  const loadChanges = async () => {
+  const loadChanges = async (isStartup: boolean = false) => {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
       const workspacePath = workspaceFolders[0].uri.fsPath;
@@ -33,8 +34,18 @@ export function activate(context: vscode.ExtensionContext) {
       await treeProvider.loadChanges(workspacePath, showPastSessions);
 
       // Process changes for live mode
+      const openOnStartup = config.get<boolean>('openDiffsOnStartup', false);
+
+      // Process changes for live mode
       const changes = parser.getCurrentSessionChanges(workspacePath);
-      await liveDiffTracker.processChanges(changes);
+
+      // Skip opening diffs on startup unless explicitly enabled
+      const skipDiffs = isStartup && !openOnStartup;
+      if (skipDiffs) {
+        console.log('[Extension] Skipping diff opening on startup (openDiffsOnStartup=false)');
+      }
+
+      await liveDiffTracker.processChanges(changes, skipDiffs);
     }
   };
 
@@ -46,17 +57,26 @@ export function activate(context: vscode.ExtensionContext) {
 
     liveDiffTracker.setEnabled(enabled);
     liveDiffTracker.setDelay(delay);
+  };
 
-    if (enabled) {
-      outputChannel.show(true); // Show output channel when enabled
-    }
+  // Configure heuristic tracker from settings
+  const configureHeuristicTracker = () => {
+    const config = vscode.workspace.getConfiguration('claudeCodeDiff');
+    const enabled = config.get<boolean>('enableHeuristicTracker', false);
+    const delay = config.get<number>('heuristicTrackerDelay', 500);
+    const notifications = config.get<boolean>('heuristicTrackerNotifications', false);
+
+    heuristicTracker.setEnabled(enabled);
+    heuristicTracker.setDelay(delay);
+    heuristicTracker.setShowNotifications(notifications);
   };
 
   // Initial configuration
   configureLiveMode();
+  configureHeuristicTracker();
 
-  // Initial load
-  loadChanges();
+  // Initial load (mark as startup)
+  loadChanges(true);
 
   // Watch for configuration changes
   context.subscriptions.push(
@@ -70,6 +90,13 @@ export function activate(context: vscode.ExtensionContext) {
           e.affectsConfiguration('claudeCodeDiff.liveDelay')) {
         console.log('[Extension] Live mode configuration changed');
         configureLiveMode();
+      }
+
+      if (e.affectsConfiguration('claudeCodeDiff.enableHeuristicTracker') ||
+          e.affectsConfiguration('claudeCodeDiff.heuristicTrackerDelay') ||
+          e.affectsConfiguration('claudeCodeDiff.heuristicTrackerNotifications')) {
+        console.log('[Extension] Heuristic tracker configuration changed');
+        configureHeuristicTracker();
       }
     })
   );
@@ -101,6 +128,19 @@ export function activate(context: vscode.ExtensionContext) {
       context.subscriptions.push(sessionWatcher);
     }
   }
+
+  // Register heuristic tracker listeners
+  context.subscriptions.push(
+    vscode.workspace.onWillSaveTextDocument(event => {
+      heuristicTracker.onWillSaveTextDocument(event);
+    }),
+    vscode.workspace.onDidOpenTextDocument(doc => {
+      heuristicTracker.onDidOpenTextDocument(doc);
+    }),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      heuristicTracker.onDidCloseTextDocument(doc);
+    })
+  );
 
   // Command: Show session changes
   const showSessionChanges = vscode.commands.registerCommand(
@@ -198,10 +238,11 @@ export function activate(context: vscode.ExtensionContext) {
 
           progress.report({ increment: 20 });
 
-          // Show summary
-          diffTracker.showChangesSummary(changes);
-
-          progress.report({ increment: 10 });
+          // Show info message with summary
+          const grouped = diffTracker.groupChangesByFile(changes);
+          vscode.window.showInformationMessage(
+            `Found ${changes.length} changes in ${grouped.size} files`
+          );
 
           // Show quick pick for detailed view
           await diffTracker.showChangesQuickPick(changes);
@@ -233,8 +274,13 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      // Show summary in output channel
-      diffTracker.showChangesSummary(changes);
+      // Show summary notification and quick pick
+      const grouped = diffTracker.groupChangesByFile(changes);
+      vscode.window.showInformationMessage(
+        `Found ${changes.length} changes in ${grouped.size} files`
+      );
+
+      await diffTracker.showChangesQuickPick(changes);
     }
   );
 
@@ -257,14 +303,86 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
+  // Command: Close all diffs
+  const closeAllDiffs = vscode.commands.registerCommand(
+    'claudeCodeDiff.closeAllDiffs',
+    async () => {
+      await diffTracker.closeAllDiffs();
+      vscode.window.showInformationMessage('All diffs closed');
+    }
+  );
+
+  // Command: Show deletions only
+  const showDeletions = vscode.commands.registerCommand(
+    'claudeCodeDiff.showDeletions',
+    async () => {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+
+      if (!workspaceFolders || workspaceFolders.length === 0) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+      }
+
+      const workspacePath = workspaceFolders[0].uri.fsPath;
+
+      // Get all changes
+      const changes = parser.getCurrentSessionChanges(workspacePath);
+
+      if (changes.length === 0) {
+        vscode.window.showInformationMessage(
+          'No changes found in current session'
+        );
+        return;
+      }
+
+      // Show only deletions
+      await diffTracker.showDeletionsQuickPick(changes);
+    }
+  );
+
+  // Command: Toggle multiple diffs
+  const toggleMultipleDiffs = vscode.commands.registerCommand(
+    'claudeCodeDiff.toggleMultipleDiffs',
+    async () => {
+      const config = vscode.workspace.getConfiguration('claudeCodeDiff');
+      const currentValue = config.get<boolean>('liveMultipleDiffs', true);
+      const newValue = !currentValue;
+
+      try {
+        // Update in global settings (persists across all workspaces)
+        await config.update('liveMultipleDiffs', newValue, vscode.ConfigurationTarget.Global);
+
+        // Verify the change was applied
+        const updatedConfig = vscode.workspace.getConfiguration('claudeCodeDiff');
+        const verifiedValue = updatedConfig.get<boolean>('liveMultipleDiffs');
+
+        console.log(`[Extension] Multiple diffs toggled: ${currentValue} -> ${verifiedValue}`);
+
+        const status = verifiedValue ? 'ENABLED' : 'DISABLED';
+        const icon = verifiedValue ? '✓' : '✗';
+
+        vscode.window.showInformationMessage(
+          `${icon} Multiple diff tabs: ${status} (applies to all workspaces)`
+        );
+      } catch (error) {
+        console.error('[Extension] Error toggling multiple diffs:', error);
+        vscode.window.showErrorMessage(
+          `Failed to toggle setting: ${error}`
+        );
+      }
+    }
+  );
+
   context.subscriptions.push(
     treeView,
-    outputChannel,
     showSessionChanges,
     showRecentDiffs,
     showChangesSummary,
     refreshChanges,
-    viewDiff
+    viewDiff,
+    closeAllDiffs,
+    showDeletions,
+    toggleMultipleDiffs
   );
 }
 
