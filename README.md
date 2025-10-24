@@ -18,6 +18,23 @@ This extension is not a Git replacement. It is simply a tool to understand what 
 
 **Multi-Instance Support**: Automatically detects Claude installations in standard locations or use custom paths for multiple instances.
 
+## Screenshots
+
+### Live Diff Viewing
+The extension automatically opens diff views when Claude makes changes, showing you exactly what was modified in real-time.
+
+![Live Diff View](images/live-diff-view.png)
+
+### Changes Tree View
+Browse all session changes in a dedicated tree view in the activity bar, organized by file.
+
+![Changes Tree View](images/tree-view.png)
+
+### File Deletion Tracking
+Track deleted files with notifications and the ability to view what was removed.
+
+![Deletion Notification](images/deletion-notification.png)
+
 ## Commands
 
 ### `Claude Code: Show Session Changes`
